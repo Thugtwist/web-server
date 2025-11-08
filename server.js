@@ -127,6 +127,62 @@ async function ensureUploadsDir() {
 
 ensureUploadsDir();
 
+// Add this function to convert base64 images to files
+async function convertBase64ToImages() {
+  try {
+    console.log('🔄 Checking for base64 images to convert...');
+    
+    const announcements = await Announcement.find({
+      $or: [
+        { image: { $regex: /^iVBORw/ } },
+        { image: { $regex: /^data:image/ } }
+      ]
+    });
+    
+    console.log(`📸 Found ${announcements.length} announcements with base64 images`);
+    
+    for (const announcement of announcements) {
+      try {
+        let base64Data = announcement.image;
+        
+        // Remove data URL prefix if present
+        if (base64Data.startsWith('data:image')) {
+          base64Data = base64Data.split(',')[1];
+        }
+        
+        // Generate filename
+        const filename = `converted-${announcement._id}-${Date.now()}.png`;
+        const filePath = path.join(__dirname, 'uploads', filename);
+        
+        // Convert base64 to buffer and save as file
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        await fs.writeFile(filePath, imageBuffer);
+        
+        // Update announcement with filename instead of base64
+        announcement.image = filename;
+        await announcement.save();
+        
+        console.log(`✅ Converted base64 image for: ${announcement.title}`);
+      } catch (error) {
+        console.error(`❌ Failed to convert image for ${announcement.title}:`, error.message);
+      }
+    }
+    
+    console.log('🎉 Base64 image conversion completed');
+  } catch (error) {
+    console.error('❌ Error in base64 conversion:', error);
+  }
+}
+
+// Call this function when server starts (after MongoDB connection)
+db.once('open', () => {
+  console.log('🗄️ Database jbmmsi is ready - setting up change streams');
+  setupChangeStreams();
+  
+  // Convert existing base64 images
+  convertBase64ToImages();
+});
+
 // ========== SCHEMAS ==========
 
 // Define schema for inquiries
@@ -602,11 +658,10 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// In your server.js - UPDATE the active announcements endpoint
-// TEMPORARY FIX - Replace your active announcements endpoint with this:
+// IMPROVED FIX - Active announcements endpoint
 app.get('/api/announcements/active', async (req, res) => {
   try {
-    console.log('📢 TEMPORARY: Fetching ALL announcements (active filter disabled)...');
+    console.log('📢 Fetching active announcements...');
     
     // Get ALL announcements regardless of isActive status
     const announcements = await Announcement.find({})
@@ -615,24 +670,49 @@ app.get('/api/announcements/active', async (req, res) => {
     
     console.log(`✅ Found ${announcements.length} announcements`);
     
-    // Format announcements with proper image handling
-    const formattedAnnouncements = announcements.map(announcement => {
-      let imageUrl = announcement.image;
-      
-      // Handle base64 images
-      if (announcement.image && announcement.image.startsWith('data:image')) {
-        // Use base64 data directly
-        console.log('📸 Using base64 image for:', announcement.title);
-      } else if (announcement.image && !announcement.image.startsWith('http')) {
-        // Construct proper URL for filenames
-        imageUrl = formatImageUrl(req, announcement.image);
-      }
-      
-      return {
-        ...announcement.toObject(),
-        image: imageUrl
-      };
-    });
+    // Format announcements with PROPER image handling
+    const formattedAnnouncements = await Promise.all(
+      announcements.map(async (announcement) => {
+        let imageUrl = announcement.image;
+        
+        // Check if image is base64 (incomplete data)
+        if (announcement.image && 
+            (announcement.image.startsWith('iVBORw') || 
+             announcement.image.startsWith('data:image'))) {
+          
+          console.log(`⚠️ Base64 image detected for: ${announcement.title}`);
+          console.log(`📏 Image data length: ${announcement.image.length}`);
+          
+          // If base64 data is too short, it's probably truncated
+          if (announcement.image.length < 1000) {
+            console.log(`❌ Base64 data too short, using placeholder for: ${announcement.title}`);
+            imageUrl = getPlaceholderUrl(req);
+          } else {
+            try {
+              // Try to use base64 data with proper prefix
+              if (announcement.image.startsWith('iVBORw')) {
+                imageUrl = `data:image/png;base64,${announcement.image}`;
+              }
+              // If it already has data: prefix, use as is
+            } catch (error) {
+              console.error(`❌ Error processing base64 for ${announcement.title}:`, error);
+              imageUrl = getPlaceholderUrl(req);
+            }
+          }
+        } else if (announcement.image && !announcement.image.startsWith('http')) {
+          // Construct proper URL for filenames
+          imageUrl = formatImageUrl(req, announcement.image);
+        } else if (!announcement.image) {
+          // No image - use placeholder
+          imageUrl = getPlaceholderUrl(req);
+        }
+        
+        return {
+          ...announcement.toObject(),
+          image: imageUrl
+        };
+      })
+    );
     
     sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
@@ -640,6 +720,11 @@ app.get('/api/announcements/active', async (req, res) => {
     sendResponse(res, 500, false, 'Error fetching announcements');
   }
 });
+
+// Add this helper function
+function getPlaceholderUrl(req) {
+  return `${getBaseUrl(req)}/images/placeholder.jpg`;
+}
 
 // Get single announcement
 app.get('/api/announcements/:id', async (req, res) => {
@@ -659,6 +744,33 @@ app.get('/api/announcements/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching announcement:', error);
     sendResponse(res, 500, false, 'Error fetching announcement');
+  }
+});
+
+// Add this debug endpoint to check specific announcement images
+app.get('/api/debug/announcement-images', async (req, res) => {
+  try {
+    const announcements = await Announcement.find({});
+    
+    const imageAnalysis = announcements.map(announcement => ({
+      id: announcement._id,
+      title: announcement.title,
+      hasImage: !!announcement.image,
+      imageLength: announcement.image ? announcement.image.length : 0,
+      imagePreview: announcement.image ? 
+        announcement.image.substring(0, 100) + '...' : 
+        'No image',
+      imageType: announcement.image ? 
+        (announcement.image.startsWith('data:') ? 'data-url' : 
+         announcement.image.startsWith('iVBORw') ? 'base64-no-prefix' : 
+         announcement.image.startsWith('http') ? 'url' : 'filename') : 
+        'none'
+    }));
+    
+    sendResponse(res, 200, true, 'Image analysis', imageAnalysis);
+  } catch (error) {
+    console.error('Image analysis error:', error);
+    sendResponse(res, 500, false, 'Analysis error');
   }
 });
 
