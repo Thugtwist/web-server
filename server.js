@@ -603,36 +603,28 @@ app.get('/api/announcements', async (req, res) => {
 });
 
 // In your server.js - UPDATE the active announcements endpoint
+// TEMPORARY FIX - Replace your active announcements endpoint with this:
 app.get('/api/announcements/active', async (req, res) => {
   try {
-    console.log('📢 Fetching active announcements...');
+    console.log('📢 TEMPORARY: Fetching ALL announcements (active filter disabled)...');
     
-    // Get ALL announcements first to debug
-    const allAnnouncements = await Announcement.find({});
-    console.log('🔍 All announcements in DB:', allAnnouncements.map(a => ({
-      id: a._id,
-      title: a.title,
-      isActive: a.isActive,
-      image: a.image ? 'Has image' : 'No image'
-    })));
-    
-    // Now get active announcements
-    const activeAnnouncements = await Announcement.find({ isActive: true })
+    // Get ALL announcements regardless of isActive status
+    const announcements = await Announcement.find({})
       .sort({ createdAt: -1 })
       .limit(6);
     
-    console.log('✅ Active announcements found:', activeAnnouncements.length);
+    console.log(`✅ Found ${announcements.length} announcements`);
     
-    // Format the announcements with proper image URLs
-    const formattedAnnouncements = activeAnnouncements.map(announcement => {
-      // Check if image is base64 data (starts with data: or iVBORw)
+    // Format announcements with proper image handling
+    const formattedAnnouncements = announcements.map(announcement => {
       let imageUrl = announcement.image;
+      
+      // Handle base64 images
       if (announcement.image && announcement.image.startsWith('data:image')) {
-        // It's base64 data - we need to handle this differently
-        console.log('⚠️ Base64 image detected for announcement:', announcement.title);
-        imageUrl = announcement.image; // Use base64 directly for now
+        // Use base64 data directly
+        console.log('📸 Using base64 image for:', announcement.title);
       } else if (announcement.image && !announcement.image.startsWith('http')) {
-        // It's a filename, construct full URL
+        // Construct proper URL for filenames
         imageUrl = formatImageUrl(req, announcement.image);
       }
       
@@ -642,10 +634,10 @@ app.get('/api/announcements/active', async (req, res) => {
       };
     });
     
-    sendResponse(res, 200, true, 'Active announcements fetched successfully', formattedAnnouncements);
+    sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
-    console.error('❌ Error fetching active announcements:', error);
-    sendResponse(res, 500, false, 'Error fetching active announcements');
+    console.error('❌ Error fetching announcements:', error);
+    sendResponse(res, 500, false, 'Error fetching announcements');
   }
 });
 
