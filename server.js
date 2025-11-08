@@ -602,21 +602,49 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// Get active announcements only (for frontend display)
+// In your server.js - UPDATE the active announcements endpoint
 app.get('/api/announcements/active', async (req, res) => {
   try {
-    const announcements = await Announcement.find({ isActive: true })
+    console.log('📢 Fetching active announcements...');
+    
+    // Get ALL announcements first to debug
+    const allAnnouncements = await Announcement.find({});
+    console.log('🔍 All announcements in DB:', allAnnouncements.map(a => ({
+      id: a._id,
+      title: a.title,
+      isActive: a.isActive,
+      image: a.image ? 'Has image' : 'No image'
+    })));
+    
+    // Now get active announcements
+    const activeAnnouncements = await Announcement.find({ isActive: true })
       .sort({ createdAt: -1 })
       .limit(6);
     
-    const formattedAnnouncements = announcements.map(announcement => ({
-      ...announcement.toObject(),
-      image: formatImageUrl(req, announcement.image)
-    }));
+    console.log('✅ Active announcements found:', activeAnnouncements.length);
+    
+    // Format the announcements with proper image URLs
+    const formattedAnnouncements = activeAnnouncements.map(announcement => {
+      // Check if image is base64 data (starts with data: or iVBORw)
+      let imageUrl = announcement.image;
+      if (announcement.image && announcement.image.startsWith('data:image')) {
+        // It's base64 data - we need to handle this differently
+        console.log('⚠️ Base64 image detected for announcement:', announcement.title);
+        imageUrl = announcement.image; // Use base64 directly for now
+      } else if (announcement.image && !announcement.image.startsWith('http')) {
+        // It's a filename, construct full URL
+        imageUrl = formatImageUrl(req, announcement.image);
+      }
+      
+      return {
+        ...announcement.toObject(),
+        image: imageUrl
+      };
+    });
     
     sendResponse(res, 200, true, 'Active announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
-    console.error('Error fetching active announcements:', error);
+    console.error('❌ Error fetching active announcements:', error);
     sendResponse(res, 500, false, 'Error fetching active announcements');
   }
 });
@@ -1089,6 +1117,81 @@ app.get('/api/docs', (req, res) => {
       'Error handling'
     ]
   });
+});
+
+// Add debug endpoint to check announcements
+app.get('/api/debug/announcements', async (req, res) => {
+  try {
+    const allAnnouncements = await Announcement.find({});
+    const activeAnnouncements = await Announcement.find({ isActive: true });
+    
+    const debugInfo = {
+      total: allAnnouncements.length,
+      active: activeAnnouncements.length,
+      allAnnouncements: allAnnouncements.map(a => ({
+        _id: a._id,
+        title: a.title,
+        isActive: a.isActive,
+        imageType: a.image ? (a.image.startsWith('data:') ? 'base64' : 'filename') : 'none',
+        imageLength: a.image ? a.image.length : 0,
+        createdAt: a.createdAt
+      })),
+      activeAnnouncements: activeAnnouncements.map(a => ({
+        _id: a._id,
+        title: a.title,
+        isActive: a.isActive
+      }))
+    };
+    
+    sendResponse(res, 200, true, 'Debug information', debugInfo);
+  } catch (error) {
+    console.error('Debug error:', error);
+    sendResponse(res, 500, false, 'Debug error');
+  }
+});
+
+// Add uploads test endpoint
+app.get('/api/debug/uploads', async (req, res) => {
+  try {
+    const fs = require('fs').promises;
+    const uploadsPath = path.join(__dirname, 'uploads');
+    
+    try {
+      const files = await fs.readdir(uploadsPath);
+      const fileStats = await Promise.all(
+        files.map(async (file) => {
+          const filePath = path.join(uploadsPath, file);
+          const stats = await fs.stat(filePath);
+          return {
+            name: file,
+            size: stats.size,
+            created: stats.birthtime
+          };
+        })
+      );
+      
+      sendResponse(res, 200, true, 'Uploads directory check', {
+        uploadsPath,
+        fileCount: files.length,
+        files: fileStats
+      });
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        sendResponse(res, 200, true, 'Uploads directory does not exist', {
+          uploadsPath,
+          fileCount: 0,
+          files: []
+        });
+      } else {
+        throw error;
+      }
+    }
+  } catch (error) {
+    console.error('Uploads test error:', error);
+    sendResponse(res, 500, false, 'Error checking uploads directory', {
+      error: error.message
+    });
+  }
 });
 
 // Root endpoint
