@@ -7,11 +7,13 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import fs from 'fs';
+import { promisify } from 'util';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 2000;
 
 // Create HTTP server for Socket.IO
 const server = createServer(app);
@@ -50,18 +52,31 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static('public'));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Connect to MongoDB with enhanced options
-mongoose.connect(process.env.MONGODB_ATLAS_URI || process.env.MONGODB_URI, {
+// Environment variable validation
+const requiredEnvVars = ['MONGODB_ATLAS_URI'];
+requiredEnvVars.forEach(envVar => {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+});
+
+// Connect to MongoDB with jbmmsi database
+console.log('🔗 Connecting to MongoDB database: jbmmsi');
+mongoose.connect(process.env.MONGODB_ATLAS_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => console.log('✅ Connected to MongoDB Atlas'))
-.catch(error => console.error('❌ MongoDB connection error:', error));
+.then(() => console.log('✅ Connected to MongoDB Atlas - Database: jbmmsi'))
+.catch(error => {
+  console.error('❌ MongoDB connection error:', error);
+  process.exit(1);
+});
 
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
-  console.log('📊 MongoDB database connection established');
+  console.log('📊 MongoDB database connection established - jbmmsi');
 });
 
 // Enhanced Multer configuration for file uploads
@@ -90,13 +105,11 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024 // Increased to 10MB limit
+    fileSize: 10 * 1024 * 1024 // 10MB limit
   }
 });
 
 // Create uploads directory if it doesn't exist
-import fs from 'fs';
-import { promisify } from 'util';
 const mkdir = promisify(fs.mkdir);
 const exists = promisify(fs.exists);
 
@@ -114,7 +127,7 @@ async function ensureUploadsDir() {
 
 ensureUploadsDir();
 
-// ========== ENHANCED SCHEMAS WITH VALIDATION ==========
+// ========== SCHEMAS ==========
 
 // Define schema for inquiries
 const inquirySchema = new mongoose.Schema({
@@ -167,7 +180,7 @@ const inquirySchema = new mongoose.Schema({
 
 const Inquiry = mongoose.model('Inquiry', inquirySchema);
 
-// Define schema for announcements (unchanged)
+// Define schema for announcements
 const announcementSchema = new mongoose.Schema({
   title: { 
     type: String, 
@@ -204,7 +217,7 @@ const announcementSchema = new mongoose.Schema({
 
 const Announcement = mongoose.model('Announcement', announcementSchema);
 
-// Define schema for schools gallery (unchanged)
+// Define schema for schools gallery
 const schoolSchema = new mongoose.Schema({
   name: { 
     type: String, 
@@ -232,7 +245,7 @@ const schoolSchema = new mongoose.Schema({
 
 const School = mongoose.model('School', schoolSchema);
 
-// Define schema for reviews (unchanged)
+// Define schema for reviews
 const reviewSchema = new mongoose.Schema({
   name: { 
     type: String, 
@@ -273,7 +286,7 @@ const reviewSchema = new mongoose.Schema({
 
 const Review = mongoose.model('Review', reviewSchema);
 
-// ========== ENHANCED UTILITY FUNCTIONS ==========
+// ========== UTILITY FUNCTIONS ==========
 
 // Helper function to get base URL
 const getBaseUrl = (req) => {
@@ -292,11 +305,57 @@ const sendResponse = (res, status, success, message, data = null) => {
   return res.status(status).json(response);
 };
 
-// ========== MONGODB CHANGE STREAMS (UNCHANGED) ==========
+// ========== DATABASE STATUS ROUTES ==========
+
+// Get database status and collections
+app.get('/api/database-status', async (req, res) => {
+  try {
+    const collections = await db.db.listCollections().toArray();
+    const collectionNames = collections.map(col => col.name);
+    
+    const stats = {
+      database: db.db.databaseName,
+      collections: collectionNames,
+      counts: {}
+    };
+    
+    // Get document counts for each collection
+    for (let collectionName of collectionNames) {
+      stats.counts[collectionName] = await db.db.collection(collectionName).countDocuments();
+    }
+    
+    sendResponse(res, 200, true, 'Database status retrieved', stats);
+  } catch (error) {
+    console.error('Error checking database:', error);
+    sendResponse(res, 500, false, 'Error checking database status');
+  }
+});
+
+// Get all data counts
+app.get('/api/stats', async (req, res) => {
+  try {
+    const stats = {
+      inquiries: await Inquiry.countDocuments(),
+      announcements: await Announcement.countDocuments(),
+      schools: await School.countDocuments(),
+      reviews: await Review.countDocuments(),
+      activeAnnouncements: await Announcement.countDocuments({ isActive: true }),
+      approvedReviews: await Review.countDocuments({ isApproved: true }),
+      activeSchools: await School.countDocuments({ isActive: true })
+    };
+    
+    sendResponse(res, 200, true, 'Database statistics', stats);
+  } catch (error) {
+    console.error('Error getting stats:', error);
+    sendResponse(res, 500, false, 'Error getting statistics');
+  }
+});
+
+// ========== MONGODB CHANGE STREAMS ==========
 
 async function setupChangeStreams() {
   try {
-    console.log('🔍 Setting up MongoDB Change Streams...');
+    console.log('🔍 Setting up MongoDB Change Streams for jbmmsi database...');
 
     const announcementsChangeStream = Announcement.watch();
     announcementsChangeStream.on('change', (change) => {
@@ -375,7 +434,7 @@ async function setupChangeStreams() {
       }
     });
 
-    console.log('✅ All MongoDB Change Streams activated');
+    console.log('✅ All MongoDB Change Streams activated for jbmmsi database');
   } catch (error) {
     console.error('❌ Error setting up Change Streams:', error);
   }
@@ -383,20 +442,21 @@ async function setupChangeStreams() {
 
 // Start change streams after MongoDB connection is established
 db.once('open', () => {
-  console.log('Connected to MongoDB');
+  console.log('🗄️ Database jbmmsi is ready - setting up change streams');
   setupChangeStreams();
 });
 
-// ========== ENHANCED WEBSOCKET SETUP ==========
+// ========== WEBSOCKET SETUP ==========
 
 io.on('connection', (socket) => {
   console.log('🔌 New client connected:', socket.id);
 
   // Send initial connection confirmation
   socket.emit('connected', { 
-    message: 'Connected to real-time server', 
+    message: 'Connected to JBMMSI real-time server', 
     timestamp: new Date(),
-    clientId: socket.id
+    clientId: socket.id,
+    database: 'jbmmsi'
   });
 
   // Join room for specific features
@@ -426,9 +486,9 @@ function broadcastToClients(event, data) {
   console.log(`📢 Broadcasted ${event} to ${io.engine.clientsCount} clients`);
 }
 
-// ========== ENHANCED INQUIRIES ROUTES ==========
+// ========== INQUIRIES ROUTES ==========
 
-// Get all inquiries (NEW - for admin dashboard)
+// Get all inquiries (for admin dashboard)
 app.get('/api/inquiries', async (req, res) => {
   try {
     const { page = 1, limit = 10, status } = req.query;
@@ -453,7 +513,7 @@ app.get('/api/inquiries', async (req, res) => {
   }
 });
 
-// Update inquiry status (NEW - for admin)
+// Update inquiry status (for admin)
 app.patch('/api/inquiries/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
@@ -474,7 +534,7 @@ app.patch('/api/inquiries/:id/status', async (req, res) => {
   }
 });
 
-// Existing inquiry submission (unchanged)
+// Submit new inquiry
 app.post('/api/inquiries', async (req, res) => {
   try {
     console.log('Received inquiry:', req.body);
@@ -490,7 +550,7 @@ app.post('/api/inquiries', async (req, res) => {
     });
     
     await inquiry.save();
-    console.log('Inquiry saved successfully');
+    console.log('Inquiry saved successfully to jbmmsi database');
 
     broadcastToClients('inquiry_created', inquiry);
     
@@ -509,7 +569,7 @@ app.post('/api/inquiries', async (req, res) => {
   }
 });
 
-// ========== ENHANCED ANNOUNCEMENTS ROUTES ==========
+// ========== ANNOUNCEMENTS ROUTES ==========
 
 // Get all announcements with pagination
 app.get('/api/announcements', async (req, res) => {
@@ -561,10 +621,135 @@ app.get('/api/announcements/active', async (req, res) => {
   }
 });
 
-// Rest of your announcements routes remain the same...
-// [Keep all your existing announcements routes: GET /:id, POST, PUT, DELETE]
+// Get single announcement
+app.get('/api/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await Announcement.findById(req.params.id);
+    
+    if (!announcement) {
+      return sendResponse(res, 404, false, 'Announcement not found');
+    }
+    
+    const formattedAnnouncement = {
+      ...announcement.toObject(),
+      image: formatImageUrl(req, announcement.image)
+    };
+    
+    sendResponse(res, 200, true, 'Announcement fetched successfully', formattedAnnouncement);
+  } catch (error) {
+    console.error('Error fetching announcement:', error);
+    sendResponse(res, 500, false, 'Error fetching announcement');
+  }
+});
 
-// ========== ENHANCED SCHOOLS ROUTES ==========
+// Create new announcement
+app.post('/api/announcements', upload.single('image'), async (req, res) => {
+  try {
+    const { title, date, description } = req.body;
+    
+    if (!req.file) {
+      return sendResponse(res, 400, false, 'Image file is required');
+    }
+    
+    const announcement = new Announcement({
+      title,
+      date,
+      description,
+      image: req.file.filename
+    });
+    
+    await announcement.save();
+    
+    const formattedAnnouncement = {
+      ...announcement.toObject(),
+      image: formatImageUrl(req, announcement.image)
+    };
+    
+    broadcastToClients('announcement_created', formattedAnnouncement);
+    
+    sendResponse(res, 201, true, 'Announcement created successfully', formattedAnnouncement);
+  } catch (error) {
+    console.error('Error creating announcement:', error);
+    sendResponse(res, 500, false, 'Error creating announcement');
+  }
+});
+
+// Update announcement
+app.put('/api/announcements/:id', upload.single('image'), async (req, res) => {
+  try {
+    const { title, date, description, isActive } = req.body;
+    const updateData = { 
+      title, 
+      date, 
+      description, 
+      isActive,
+      updatedAt: new Date()
+    };
+    
+    if (req.file) {
+      updateData.image = req.file.filename;
+    }
+    
+    const announcement = await Announcement.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+    
+    if (!announcement) {
+      return sendResponse(res, 404, false, 'Announcement not found');
+    }
+    
+    const formattedAnnouncement = {
+      ...announcement.toObject(),
+      image: formatImageUrl(req, announcement.image)
+    };
+    
+    broadcastToClients('announcement_updated', formattedAnnouncement);
+    
+    sendResponse(res, 200, true, 'Announcement updated successfully', formattedAnnouncement);
+  } catch (error) {
+    console.error('Error updating announcement:', error);
+    sendResponse(res, 500, false, 'Error updating announcement');
+  }
+});
+
+// Delete announcement
+app.delete('/api/announcements/:id', async (req, res) => {
+  try {
+    const announcement = await Announcement.findByIdAndDelete(req.params.id);
+    
+    if (!announcement) {
+      return sendResponse(res, 404, false, 'Announcement not found');
+    }
+    
+    broadcastToClients('announcement_deleted', { id: req.params.id });
+    
+    sendResponse(res, 200, true, 'Announcement deleted successfully');
+  } catch (error) {
+    console.error('Error deleting announcement:', error);
+    sendResponse(res, 500, false, 'Error deleting announcement');
+  }
+});
+
+// ========== SCHOOLS ROUTES ==========
+
+// Get all schools
+app.get('/api/schools', async (req, res) => {
+  try {
+    const schools = await School.find().sort({ createdAt: -1 });
+    
+    const schoolsWithFullUrls = schools.map(school => ({
+      ...school.toObject(),
+      imageUrl: formatImageUrl(req, school.imageUrl)
+    }));
+    
+    sendResponse(res, 200, true, 'Schools fetched successfully', schoolsWithFullUrls);
+  } catch (error) {
+    console.error('Error fetching schools:', error);
+    sendResponse(res, 500, false, 'Error fetching schools');
+  }
+});
 
 // Get active schools only (for frontend gallery)
 app.get('/api/schools/active', async (req, res) => {
@@ -586,10 +771,125 @@ app.get('/api/schools/active', async (req, res) => {
   }
 });
 
-// Rest of your schools routes remain the same...
-// [Keep all your existing schools routes: GET, GET /:id, POST, PUT, DELETE]
+// Get single school
+app.get('/api/schools/:id', async (req, res) => {
+  try {
+    const school = await School.findById(req.params.id);
+    
+    if (!school) {
+      return sendResponse(res, 404, false, 'School not found');
+    }
+    
+    const schoolWithFullUrl = {
+      ...school.toObject(),
+      imageUrl: formatImageUrl(req, school.imageUrl)
+    };
+    
+    sendResponse(res, 200, true, 'School fetched successfully', schoolWithFullUrl);
+  } catch (error) {
+    console.error('Error fetching school:', error);
+    sendResponse(res, 500, false, 'Error fetching school');
+  }
+});
 
-// ========== ENHANCED REVIEWS ROUTES ==========
+// Create new school
+app.post('/api/schools', upload.single('image'), async (req, res) => {
+  try {
+    const { name } = req.body;
+    
+    if (!req.file) {
+      return sendResponse(res, 400, false, 'Image file is required');
+    }
+    
+    const school = new School({
+      name,
+      imageUrl: req.file.filename
+    });
+    
+    await school.save();
+    
+    const schoolWithFullUrl = {
+      ...school.toObject(),
+      imageUrl: formatImageUrl(req, school.imageUrl)
+    };
+    
+    broadcastToClients('school_created', schoolWithFullUrl);
+    
+    sendResponse(res, 201, true, 'School created successfully', schoolWithFullUrl);
+  } catch (error) {
+    console.error('Error creating school:', error);
+    sendResponse(res, 500, false, 'Error creating school');
+  }
+});
+
+// Update school
+app.put('/api/schools/:id', upload.single('image'), async (req, res) => {
+  try {
+    const { name, isActive } = req.body;
+    const updateData = { 
+      name, 
+      isActive,
+      updatedAt: new Date()
+    };
+    
+    if (req.file) {
+      updateData.imageUrl = req.file.filename;
+    }
+    
+    const school = await School.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+    
+    if (!school) {
+      return sendResponse(res, 404, false, 'School not found');
+    }
+    
+    const schoolWithFullUrl = {
+      ...school.toObject(),
+      imageUrl: formatImageUrl(req, school.imageUrl)
+    };
+    
+    broadcastToClients('school_updated', schoolWithFullUrl);
+    
+    sendResponse(res, 200, true, 'School updated successfully', schoolWithFullUrl);
+  } catch (error) {
+    console.error('Error updating school:', error);
+    sendResponse(res, 500, false, 'Error updating school');
+  }
+});
+
+// Delete school
+app.delete('/api/schools/:id', async (req, res) => {
+  try {
+    const school = await School.findByIdAndDelete(req.params.id);
+    
+    if (!school) {
+      return sendResponse(res, 404, false, 'School not found');
+    }
+    
+    broadcastToClients('school_deleted', { id: req.params.id });
+    
+    sendResponse(res, 200, true, 'School deleted successfully');
+  } catch (error) {
+    console.error('Error deleting school:', error);
+    sendResponse(res, 500, false, 'Error deleting school');
+  }
+});
+
+// ========== REVIEWS ROUTES ==========
+
+// Get all reviews
+app.get('/api/reviews', async (req, res) => {
+  try {
+    const reviews = await Review.find().sort({ createdAt: -1 });
+    sendResponse(res, 200, true, 'Reviews fetched successfully', reviews);
+  } catch (error) {
+    console.error('Error fetching reviews:', error);
+    sendResponse(res, 500, false, 'Error fetching reviews');
+  }
+});
 
 // Get approved reviews only (for frontend display)
 app.get('/api/reviews/approved', async (req, res) => {
@@ -607,7 +907,7 @@ app.get('/api/reviews/approved', async (req, res) => {
   }
 });
 
-// Get average rating (NEW)
+// Get average rating
 async function getAverageRating() {
   const result = await Review.aggregate([
     { $match: { isApproved: true } },
@@ -616,12 +916,97 @@ async function getAverageRating() {
   return result.length > 0 ? Math.round(result[0].average * 10) / 10 : 0;
 }
 
-// Rest of your reviews routes remain the same...
-// [Keep all your existing reviews routes: GET, GET /:id, POST, PUT, DELETE]
+// Get single review
+app.get('/api/reviews/:id', async (req, res) => {
+  try {
+    const review = await Review.findById(req.params.id);
+    
+    if (!review) {
+      return sendResponse(res, 404, false, 'Review not found');
+    }
+    
+    sendResponse(res, 200, true, 'Review fetched successfully', review);
+  } catch (error) {
+    console.error('Error fetching review:', error);
+    sendResponse(res, 500, false, 'Error fetching review');
+  }
+});
 
-// ========== ENHANCED GENERAL ROUTES ==========
+// Create new review
+app.post('/api/reviews', async (req, res) => {
+  try {
+    const { name, rating, comment, date } = req.body;
+    
+    const review = new Review({
+      name,
+      rating,
+      comment,
+      date
+    });
+    
+    await review.save();
+    
+    broadcastToClients('review_created', review);
+    
+    sendResponse(res, 201, true, 'Review submitted successfully', review);
+  } catch (error) {
+    console.error('Error creating review:', error);
+    sendResponse(res, 500, false, 'Error creating review');
+  }
+});
 
-// Health check endpoint with more details
+// Update review
+app.put('/api/reviews/:id', async (req, res) => {
+  try {
+    const { name, rating, comment, date, isApproved } = req.body;
+    
+    const review = await Review.findByIdAndUpdate(
+      req.params.id,
+      { 
+        name, 
+        rating, 
+        comment, 
+        date, 
+        isApproved,
+        updatedAt: new Date()
+      },
+      { new: true }
+    );
+    
+    if (!review) {
+      return sendResponse(res, 404, false, 'Review not found');
+    }
+    
+    broadcastToClients('review_updated', review);
+    
+    sendResponse(res, 200, true, 'Review updated successfully', review);
+  } catch (error) {
+    console.error('Error updating review:', error);
+    sendResponse(res, 500, false, 'Error updating review');
+  }
+});
+
+// Delete review
+app.delete('/api/reviews/:id', async (req, res) => {
+  try {
+    const review = await Review.findByIdAndDelete(req.params.id);
+    
+    if (!review) {
+      return sendResponse(res, 404, false, 'Review not found');
+    }
+    
+    broadcastToClients('review_deleted', { id: req.params.id });
+    
+    sendResponse(res, 200, true, 'Review deleted successfully');
+  } catch (error) {
+    console.error('Error deleting review:', error);
+    sendResponse(res, 500, false, 'Error deleting review');
+  }
+});
+
+// ========== GENERAL ROUTES ==========
+
+// Enhanced health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
@@ -632,9 +1017,12 @@ app.get('/api/health', async (req, res) => {
       reviews: await Review.countDocuments()
     };
     
-    sendResponse(res, 200, true, 'Server is running!', {
+    sendResponse(res, 200, true, 'JBMMSI Server is running!', {
       timestamp: new Date(),
-      database: dbStatus,
+      database: {
+        name: 'jbmmsi',
+        status: dbStatus
+      },
       uploads: 'Active',
       websockets: io.engine.clientsCount,
       memory: process.memoryUsage(),
@@ -650,8 +1038,13 @@ app.get('/api/docs', (req, res) => {
   res.json({
     message: 'JBMMSI Server API - Frontend Ready',
     version: '2.0.0',
+    database: 'jbmmsi',
     baseUrl: getBaseUrl(req),
     endpoints: {
+      database: {
+        'GET /api/database-status': 'Check database collections and counts',
+        'GET /api/stats': 'Get data statistics'
+      },
       inquiries: {
         'POST /api/inquiries': 'Submit new inquiry',
         'GET /api/inquiries': 'Get all inquiries (Admin)',
@@ -687,6 +1080,7 @@ app.get('/api/docs', (req, res) => {
       }
     },
     features: [
+      'Database: jbmmsi',
       'Real-time updates via WebSocket',
       'File upload with validation',
       'CORS enabled for frontend',
@@ -703,6 +1097,7 @@ app.get('/', (req, res) => {
     message: 'JBMMSI Server API - Frontend Ready', 
     version: '2.0.0',
     status: 'running',
+    database: 'jbmmsi',
     documentation: `${getBaseUrl(req)}/api/docs`
   });
 });
@@ -743,9 +1138,11 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 JBMMSI Server running on port ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🗄️ Database: jbmmsi`);
   console.log(`📚 API Documentation: http://localhost:${PORT}/api/docs`);
   console.log(`🔌 WebSocket server active on port ${PORT}`);
   console.log(`🖼️ Uploads directory: ./uploads/`);
+  console.log(`❤️ Health check: http://localhost:${PORT}/api/health`);
 });

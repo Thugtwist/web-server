@@ -9,7 +9,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: MONGODB_ATLAS_URI
-        value: mongodb+srv://jbmmsi:B9yA67Z7mCMgixC4@cluster0.dqfwj2r.mongodb.net/?retryWrites=true&w=majority
+        value: mongodb+srv://jbmmsi:B9yA67Z7mCMgixC4@cluster0.dqfwj2r.mongodb.net/jbmmsi?retryWrites=true&w=majority
       - key: GMAIL_USER
         value: jbmmsi01@gmail.com
       - key: GMAIL_APP_PASSWORD
