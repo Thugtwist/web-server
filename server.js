@@ -22,8 +22,8 @@ const io = new Server(server, {
     origin: [
       "http://localhost:3000",
       "http://localhost:5173",
-      "https://your-frontend-domain.vercel.app",
-      "https://your-frontend-domain.netlify.app"
+      "https://jbmmsi1.netlify.app",
+      "https://your-frontend-domain.vercel.app"
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE"]
@@ -39,8 +39,8 @@ app.use(cors({
   origin: [
     "http://localhost:3000",
     "http://localhost:5173", 
-    "https://your-frontend-domain.vercel.app",
-    "https://your-frontend-domain.netlify.app"
+    "https://jbmmsi1.netlify.app",
+    "https://your-frontend-domain.vercel.app"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
