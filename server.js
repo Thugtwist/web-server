@@ -23,7 +23,7 @@ const io = new Server(server, {
       "http://localhost:3000",
       "http://localhost:5173",
       "https://jbmmsi1.netlify.app",
-      "https://your-frontend-domain.vercel.app"
+      "https://jbmmsi.com"
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE"]
@@ -40,7 +40,7 @@ app.use(cors({
     "http://localhost:3000",
     "http://localhost:5173", 
     "https://jbmmsi1.netlify.app",
-    "https://your-frontend-domain.vercel.app"
+    "https://jbmmsi.com"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
@@ -1352,4 +1352,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`🔌 WebSocket server active on port ${PORT}`);
   console.log(`🖼️ Uploads directory: ./uploads/`);
   console.log(`❤️ Health check: http://localhost:${PORT}/api/health`);
+
 });
