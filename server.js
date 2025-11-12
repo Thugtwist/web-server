@@ -135,65 +135,44 @@ async function convertBase64ToImages() {
     const announcements = await Announcement.find({
       $or: [
         { image: { $regex: /^iVBORw/ } },
-        { image: { $regex: /^data:image/ } },
-        { image: { $exists: true, $ne: null } }
+        { image: { $regex: /^data:image/ } }
       ]
     });
     
-    console.log(`📸 Found ${announcements.length} announcements with images to process`);
-    
-    let convertedCount = 0;
-    let errorCount = 0;
+    console.log(`📸 Found ${announcements.length} announcements with base64 images`);
     
     for (const announcement of announcements) {
       try {
-        let imageData = announcement.image;
+        let base64Data = announcement.image;
         
-        // Skip if already a filename or URL
-        if (!imageData || imageData.startsWith('http') || 
-            (imageData.includes('.') && !imageData.startsWith('data:'))) {
-          continue;
-        }
-        
-        // Handle base64 data
-        if (imageData.startsWith('data:image')) {
-          imageData = imageData.split(',')[1];
-        }
-        
-        // Validate base64 data length
-        if (imageData.length < 100) {
-          console.warn(`⚠️ Skipping short base64 data for: ${announcement.title}`);
-          continue;
+        // Remove data URL prefix if present
+        if (base64Data.startsWith('data:image')) {
+          base64Data = base64Data.split(',')[1];
         }
         
         // Generate filename
-        const fileExtension = getImageExtension(announcement.image);
-        const filename = `converted-${announcement._id}-${Date.now()}${fileExtension}`;
+        const filename = `converted-${announcement._id}-${Date.now()}.png`;
         const filePath = path.join(__dirname, 'uploads', filename);
         
         // Convert base64 to buffer and save as file
-        const imageBuffer = Buffer.from(imageData, 'base64');
-        await fs.promises.writeFile(filePath, imageBuffer);
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        await fs.writeFile(filePath, imageBuffer);
         
-        // Update announcement with filename
+        // Update announcement with filename instead of base64
         announcement.image = filename;
         await announcement.save();
         
-        convertedCount++;
         console.log(`✅ Converted base64 image for: ${announcement.title}`);
-        
       } catch (error) {
-        errorCount++;
         console.error(`❌ Failed to convert image for ${announcement.title}:`, error.message);
       }
     }
     
-    console.log(`🎉 Base64 image conversion completed: ${convertedCount} converted, ${errorCount} errors`);
+    console.log('🎉 Base64 image conversion completed');
   } catch (error) {
     console.error('❌ Error in base64 conversion:', error);
   }
 }
-
 
 // Call this function when server starts (after MongoDB connection)
 db.once('open', () => {
@@ -372,27 +351,8 @@ const getBaseUrl = (req) => {
 
 // Helper function to format image URL
 const formatImageUrl = (req, filename) => {
-  if (!filename) return getPlaceholderUrl(req);
-  
-  // If it's already a full URL, return as is
-  if (filename.startsWith('http')) {
-    return filename;
-  }
-  
-  // If it's base64 data, return as is
-  if (filename.startsWith('data:image')) {
-    return filename;
-  }
-  
-  // If it's base64 without prefix, add prefix
-  if (filename.startsWith('iVBORw')) {
-    return `data:image/png;base64,${filename}`;
-  }
-  
-  // For filenames, construct full URL
   return `${getBaseUrl(req)}/uploads/${filename}`;
 };
-
 
 // Helper function for consistent API responses
 const sendResponse = (res, status, success, message, data = null) => {
@@ -703,43 +663,60 @@ app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
     
-    const announcements = await Announcement.find({ isActive: true })
+    // Get ALL announcements regardless of isActive status
+    const announcements = await Announcement.find({})
       .sort({ createdAt: -1 })
       .limit(6);
     
-    console.log(`✅ Found ${announcements.length} active announcements`);
+    console.log(`✅ Found ${announcements.length} announcements`);
     
-    // Format announcements with robust image handling
-    const formattedAnnouncements = announcements.map((announcement) => {
-      let imageUrl = announcement.image;
-      
-      // Handle different image formats
-      if (!imageUrl) {
-        imageUrl = getPlaceholderUrl(req);
-      } else if (imageUrl.startsWith('iVBORw')) {
-        // Base64 without prefix
-        imageUrl = `data:image/png;base64,${imageUrl}`;
-      } else if (!imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
-        // Filename - construct full URL
-        imageUrl = formatImageUrl(req, imageUrl);
-      }
-      // If it's already data: or http:, use as is
-      
-      return {
-        _id: announcement._id,
-        title: announcement.title,
-        date: announcement.date,
-        description: announcement.description,
-        image: imageUrl,
-        isActive: announcement.isActive,
-        createdAt: announcement.createdAt,
-        updatedAt: announcement.updatedAt
-      };
-    });
+    // Format announcements with PROPER image handling
+    const formattedAnnouncements = await Promise.all(
+      announcements.map(async (announcement) => {
+        let imageUrl = announcement.image;
+        
+        // Check if image is base64 (incomplete data)
+        if (announcement.image && 
+            (announcement.image.startsWith('iVBORw') || 
+             announcement.image.startsWith('data:image'))) {
+          
+          console.log(`⚠️ Base64 image detected for: ${announcement.title}`);
+          console.log(`📏 Image data length: ${announcement.image.length}`);
+          
+          // If base64 data is too short, it's probably truncated
+          if (announcement.image.length < 1000) {
+            console.log(`❌ Base64 data too short, using placeholder for: ${announcement.title}`);
+            imageUrl = getPlaceholderUrl(req);
+          } else {
+            try {
+              // Try to use base64 data with proper prefix
+              if (announcement.image.startsWith('iVBORw')) {
+                imageUrl = `data:image/png;base64,${announcement.image}`;
+              }
+              // If it already has data: prefix, use as is
+            } catch (error) {
+              console.error(`❌ Error processing base64 for ${announcement.title}:`, error);
+              imageUrl = getPlaceholderUrl(req);
+            }
+          }
+        } else if (announcement.image && !announcement.image.startsWith('http')) {
+          // Construct proper URL for filenames
+          imageUrl = formatImageUrl(req, announcement.image);
+        } else if (!announcement.image) {
+          // No image - use placeholder
+          imageUrl = getPlaceholderUrl(req);
+        }
+        
+        return {
+          ...announcement.toObject(),
+          image: imageUrl
+        };
+      })
+    );
     
-    sendResponse(res, 200, true, 'Active announcements fetched successfully', formattedAnnouncements);
+    sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
-    console.error('❌ Error fetching active announcements:', error);
+    console.error('❌ Error fetching announcements:', error);
     sendResponse(res, 500, false, 'Error fetching announcements');
   }
 });
@@ -1330,45 +1307,6 @@ app.get('/', (req, res) => {
     database: 'jbmmsi',
     documentation: `${getBaseUrl(req)}/api/docs`
   });
-});
-
-// Debug endpoint to fix specific announcement images
-app.post('/api/debug/fix-announcement-images', async (req, res) => {
-  try {
-    await convertBase64ToImages();
-    sendResponse(res, 200, true, 'Image conversion process completed');
-  } catch (error) {
-    console.error('Debug conversion error:', error);
-    sendResponse(res, 500, false, 'Conversion failed');
-  }
-});
-
-// Endpoint to get raw image data for debugging
-app.get('/api/debug/announcement/:id/image', async (req, res) => {
-  try {
-    const announcement = await Announcement.findById(req.params.id);
-    if (!announcement) {
-      return sendResponse(res, 404, false, 'Announcement not found');
-    }
-    
-    res.json({
-      _id: announcement._id,
-      title: announcement.title,
-      hasImage: !!announcement.image,
-      imageLength: announcement.image ? announcement.image.length : 0,
-      imageType: announcement.image ? 
-        (announcement.image.startsWith('data:') ? 'data-url' : 
-         announcement.image.startsWith('iVBORw') ? 'base64-no-prefix' : 
-         announcement.image.startsWith('http') ? 'url' : 'filename') : 
-        'none',
-      imagePreview: announcement.image ? 
-        announcement.image.substring(0, 200) + '...' : 
-        'No image'
-    });
-  } catch (error) {
-    console.error('Image debug error:', error);
-    sendResponse(res, 500, false, 'Debug error');
-  }
 });
 
 // Enhanced error handling middleware
