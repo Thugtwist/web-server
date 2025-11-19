@@ -557,16 +557,15 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// FIXED: Get active announcements with better image handling
+// SIMPLIFIED: Get active announcements - FIXED VERSION
 app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
     
-    // Use native MongoDB driver to access the same collection as mobile app
     const db = mongoose.connection.db;
     const announcementsCollection = db.collection('announcements');
     
-    // Use the same query as mobile app
+    // Use mobile app query
     let query = {
       status: { $ne: "inactive" }
     };
@@ -577,56 +576,43 @@ app.get('/api/announcements/active', async (req, res) => {
       .limit(6)
       .toArray();
 
-    console.log(`✅ Found ${announcements.length} announcements from database`);
+    console.log(`✅ Found ${announcements.length} raw announcements`);
 
-    // Format announcements to be compatible with both mobile and website
+    // SIMPLIFIED: Process announcements
     const formattedAnnouncements = announcements.map(announcement => {
-      // Use mobile app field names as primary, with fallbacks
+      console.log('🔍 Processing announcement:', {
+        id: announcement._id,
+        title: announcement.Title || announcement.title,
+        hasImage: !!announcement.image,
+        hasPhoto: !!announcement.Photo,
+        imageType: announcement.image ? 
+          (announcement.image.startsWith('data:') ? 'base64' : 
+           announcement.image.startsWith('http') ? 'url' : 
+           announcement.image.startsWith('iVBORw') ? 'base64-no-prefix' : 'other') : 'none'
+      });
+
+      // Get title from either field
       const title = announcement.Title || announcement.title || "Announcement";
       const description = announcement.Description || announcement.description || "";
-      
-      // Get image from any possible field
-      let image = announcement.Photo || announcement.image || announcement.imageUrl || "";
       const date = announcement.Date || announcement.date || 
                    announcement.createdAt ? announcement.createdAt.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-      console.log(`🖼️ Processing image for: ${title}`);
-      console.log(`   Raw image data: ${image ? `Length: ${image.length}, Preview: ${image.substring(0, 30)}...` : 'Empty'}`);
+      // SIMPLIFIED IMAGE HANDLING - Try multiple approaches
+      let finalImage = getPlaceholderUrl(req); // Default to placeholder
 
-      // Process image
-      if (image && image.trim() !== '') {
-        // If it's base64 data without prefix, add prefix
-        if (image.startsWith('iVBORw') && image.length > 100) {
-          console.log(`   Converting base64 without prefix`);
-          image = `data:image/png;base64,${image}`;
-        }
-        // If it's base64 with prefix but data is short, it might be corrupted
-        else if (image.startsWith('data:image') && image.length < 1000) {
-          console.log(`   Base64 data too short, likely corrupted`);
-          image = getPlaceholderUrl(req);
-        }
-        // If it's a filename, try to construct URL (fallback for existing data)
-        else if (image && !image.startsWith('http') && !image.startsWith('data:') && image.includes('.')) {
-          console.log(`   Filename detected: ${image}`);
-          // For now, use placeholder since we removed uploads folder
-          image = getPlaceholderUrl(req);
-        }
-        // If it's already a good base64 or URL, keep it
-        else if (image.startsWith('data:image') && image.length > 1000) {
-          console.log(`   Using valid base64 image`);
-          // Keep as is
-        }
-        else if (image.startsWith('http')) {
-          console.log(`   Using external URL`);
-          // Keep as is
-        }
-        else {
-          console.log(`   Unknown image format, using placeholder`);
-          image = getPlaceholderUrl(req);
-        }
-      } else {
-        console.log(`   No image data, using placeholder`);
-        image = getPlaceholderUrl(req);
+      // Priority 1: Use Photo field if it exists and is valid
+      if (announcement.Photo && announcement.Photo.trim() !== '') {
+        console.log(`   Using Photo field for: ${title}`);
+        finalImage = processImageData(announcement.Photo, req);
+      }
+      // Priority 2: Use image field if it exists and is valid
+      else if (announcement.image && announcement.image.trim() !== '') {
+        console.log(`   Using image field for: ${title}`);
+        finalImage = processImageData(announcement.image, req);
+      }
+      // Priority 3: If both exist but are invalid, use placeholder
+      else {
+        console.log(`   No valid image data for: ${title}, using placeholder`);
       }
 
       return {
@@ -634,31 +620,95 @@ app.get('/api/announcements/active', async (req, res) => {
         _id: announcement._id?.toString(),
         Title: title,
         Description: description,
-        Photo: image,
+        Photo: finalImage,
         Date: date,
         sentBy: announcement.sentBy || "Administrator",
         priority: announcement.priority || "medium",
         targetAudience: announcement.targetAudience || "all",
         
-        // Website fields (compatibility)
+        // Website fields
         title: title,
         description: description,
-        image: image,
+        image: finalImage,
         date: date,
         isActive: announcement.status !== "inactive"
       };
     });
 
-    console.log(`🎉 Final formatted announcements:`, formattedAnnouncements.map(a => ({
-      title: a.Title,
-      image: a.image ? `Length: ${a.image.length}` : 'No image'
-    })));
-
+    console.log(`🎉 Final processing complete. Sending ${formattedAnnouncements.length} announcements`);
+    
     sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
     console.error('❌ Error fetching announcements:', error);
     sendResponse(res, 500, false, 'Error fetching announcements');
   }
+});
+
+// Helper function to process image data
+function processImageData(imageData, req) {
+  if (!imageData || imageData.trim() === '') {
+    return getPlaceholderUrl(req);
+  }
+
+  // Trim any whitespace
+  imageData = imageData.trim();
+
+  // Case 1: Already a valid base64 data URL
+  if (imageData.startsWith('data:image') && imageData.length > 1000) {
+    console.log(`      ✅ Valid base64 data URL`);
+    return imageData;
+  }
+
+  // Case 2: Base64 without prefix but has sufficient data
+  if (imageData.startsWith('iVBORw') && imageData.length > 1000) {
+    console.log(`      ✅ Base64 without prefix, adding prefix`);
+    return `data:image/png;base64,${imageData}`;
+  }
+
+  // Case 3: External URL
+  if (imageData.startsWith('http')) {
+    console.log(`      ✅ External URL`);
+    return imageData;
+  }
+
+  // Case 4: Base64 data that's too short (corrupted)
+  if ((imageData.startsWith('data:image') || imageData.startsWith('iVBORw')) && imageData.length < 1000) {
+    console.log(`      ❌ Base64 data too short (${imageData.length} chars), likely corrupted`);
+    return getPlaceholderUrl(req);
+  }
+
+  // Case 5: Filename (without uploads folder)
+  if (imageData.includes('.') && !imageData.startsWith('http') && !imageData.startsWith('data:')) {
+    console.log(`      ❌ Filename without uploads folder: ${imageData}`);
+    return getPlaceholderUrl(req);
+  }
+
+  // Case 6: Unknown format
+  console.log(`      ❓ Unknown image format: ${imageData.substring(0, 50)}...`);
+  return getPlaceholderUrl(req);
+}
+
+// Updated placeholder function
+function getPlaceholderUrl(req) {
+  const baseUrl = getBaseUrl(req);
+  // Use a simple SVG placeholder that will definitely work
+  return `${baseUrl}/images/placeholder.svg`;
+}
+
+// Add a reliable SVG placeholder endpoint
+app.get('/images/placeholder.svg', (req, res) => {
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="#f0f0f0"/>
+  <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" 
+        font-family="Arial, sans-serif" font-size="16" fill="#666">
+    No Image Available
+  </text>
+</svg>`;
+  
+  res.set('Content-Type', 'image/svg+xml');
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.send(svg);
 });
 
 // Unified endpoint that matches mobile app exactly
