@@ -557,7 +557,7 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// FIXED: Get active announcements (no uploads folder dependency)
+// FIXED: Get active announcements with better image handling
 app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
@@ -584,37 +584,54 @@ app.get('/api/announcements/active', async (req, res) => {
       // Use mobile app field names as primary, with fallbacks
       const title = announcement.Title || announcement.title || "Announcement";
       const description = announcement.Description || announcement.description || "";
-      let image = announcement.Photo || announcement.image || "";
+      
+      // Get image from any possible field
+      let image = announcement.Photo || announcement.image || announcement.imageUrl || "";
       const date = announcement.Date || announcement.date || 
-                   announcement.createdAt ? announcement.createdAt.toISOString() : new Date().toISOString();
+                   announcement.createdAt ? announcement.createdAt.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-      // Process image - only handle base64 data, ignore file paths
-      if (image) {
-        // If it's base64 data, use as is
-        if (image.startsWith('data:image') || image.startsWith('iVBORw')) {
-          console.log(`📸 Using base64 image for: ${title}`);
-          // Ensure base64 has proper prefix
-          if (image.startsWith('iVBORw') && image.length > 1000) {
-            image = `data:image/png;base64,${image}`;
-          }
-        } 
-        // If it's a filename or URL, check if it's a valid image URL
-        else if (image.startsWith('http')) {
-          // Keep external URLs as is
-          console.log(`🌐 Using external image URL for: ${title}`);
+      console.log(`🖼️ Processing image for: ${title}`);
+      console.log(`   Raw image data: ${image ? `Length: ${image.length}, Preview: ${image.substring(0, 30)}...` : 'Empty'}`);
+
+      // Process image
+      if (image && image.trim() !== '') {
+        // If it's base64 data without prefix, add prefix
+        if (image.startsWith('iVBORw') && image.length > 100) {
+          console.log(`   Converting base64 without prefix`);
+          image = `data:image/png;base64,${image}`;
         }
-        // If it's just a filename (no uploads folder), use placeholder
+        // If it's base64 with prefix but data is short, it might be corrupted
+        else if (image.startsWith('data:image') && image.length < 1000) {
+          console.log(`   Base64 data too short, likely corrupted`);
+          image = getPlaceholderUrl(req);
+        }
+        // If it's a filename, try to construct URL (fallback for existing data)
+        else if (image && !image.startsWith('http') && !image.startsWith('data:') && image.includes('.')) {
+          console.log(`   Filename detected: ${image}`);
+          // For now, use placeholder since we removed uploads folder
+          image = getPlaceholderUrl(req);
+        }
+        // If it's already a good base64 or URL, keep it
+        else if (image.startsWith('data:image') && image.length > 1000) {
+          console.log(`   Using valid base64 image`);
+          // Keep as is
+        }
+        else if (image.startsWith('http')) {
+          console.log(`   Using external URL`);
+          // Keep as is
+        }
         else {
-          console.log(`❌ Filename without uploads folder: ${image}, using placeholder`);
+          console.log(`   Unknown image format, using placeholder`);
           image = getPlaceholderUrl(req);
         }
       } else {
+        console.log(`   No image data, using placeholder`);
         image = getPlaceholderUrl(req);
       }
 
       return {
         // Mobile app fields
-        _id: announcement._id?.toString() || `announcement-${Date.now()}`,
+        _id: announcement._id?.toString(),
         Title: title,
         Description: description,
         Photo: image,
@@ -622,19 +639,20 @@ app.get('/api/announcements/active', async (req, res) => {
         sentBy: announcement.sentBy || "Administrator",
         priority: announcement.priority || "medium",
         targetAudience: announcement.targetAudience || "all",
-        targetSection: announcement.targetSection || null,
-        targetTeacherId: announcement.targetTeacherId || null,
-        createdAt: announcement.createdAt || new Date(),
-        updatedAt: announcement.updatedAt || new Date(),
         
         // Website fields (compatibility)
         title: title,
         description: description,
         image: image,
         date: date,
-        isActive: announcement.isActive !== false
+        isActive: announcement.status !== "inactive"
       };
     });
+
+    console.log(`🎉 Final formatted announcements:`, formattedAnnouncements.map(a => ({
+      title: a.Title,
+      image: a.image ? `Length: ${a.image.length}` : 'No image'
+    })));
 
     sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
@@ -1132,31 +1150,37 @@ app.get('/api/docs', (req, res) => {
   });
 });
 
-// Add debug endpoint to check announcements
-app.get('/api/debug/announcements', async (req, res) => {
+// Debug endpoint to check raw announcement data
+app.get('/api/debug/announcements-raw', async (req, res) => {
   try {
-    const allAnnouncements = await Announcement.find({});
-    const activeAnnouncements = await Announcement.find({ isActive: true });
+    const db = mongoose.connection.db;
+    const announcementsCollection = db.collection('announcements');
     
-    const debugInfo = {
-      total: allAnnouncements.length,
-      active: activeAnnouncements.length,
-      allAnnouncements: allAnnouncements.map(a => ({
-        _id: a._id,
-        title: a.title,
-        isActive: a.isActive,
-        imageType: a.image ? (a.image.startsWith('data:') ? 'base64' : 'filename') : 'none',
-        imageLength: a.image ? a.image.length : 0,
-        createdAt: a.createdAt
-      })),
-      activeAnnouncements: activeAnnouncements.map(a => ({
-        _id: a._id,
-        title: a.title,
-        isActive: a.isActive
-      }))
-    };
-    
-    sendResponse(res, 200, true, 'Debug information', debugInfo);
+    const announcements = await announcementsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .toArray();
+
+    const debugData = announcements.map(announcement => ({
+      _id: announcement._id,
+      title: announcement.title,
+      Title: announcement.Title,
+      description: announcement.description,
+      Description: announcement.Description,
+      image: announcement.image ? `Length: ${announcement.image.length}, Type: ${typeof announcement.image}` : 'No image',
+      Photo: announcement.Photo ? `Length: ${announcement.Photo.length}, Type: ${typeof announcement.Photo}` : 'No Photo',
+      imagePreview: announcement.image ? 
+        (announcement.image.substring(0, 50) + '...') : 
+        'No image',
+      PhotoPreview: announcement.Photo ? 
+        (announcement.Photo.substring(0, 50) + '...') : 
+        'No Photo',
+      createdAt: announcement.createdAt,
+      updatedAt: announcement.updatedAt
+    }));
+
+    sendResponse(res, 200, true, 'Raw announcement data', debugData);
   } catch (error) {
     console.error('Debug error:', error);
     sendResponse(res, 500, false, 'Debug error');
