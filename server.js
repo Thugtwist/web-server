@@ -889,25 +889,6 @@ app.delete('/api/announcements/:id', async (req, res) => {
   }
 });
 
-// Helper function to get placeholder URL
-function getPlaceholderUrl(req) {
-  const baseUrl = getBaseUrl(req);
-  return `${baseUrl}/images/placeholder.jpg`;
-}
-
-// Add placeholder image endpoint
-app.get('/images/placeholder.jpg', (req, res) => {
-  // Simple SVG placeholder
-  const svg = `<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
-    <rect width="100%" height="100%" fill="#f0f0f0"/>
-    <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" 
-          font-family="Arial" font-size="16" fill="#999">No Image Available</text>
-  </svg>`;
-  
-  res.set('Content-Type', 'image/svg+xml');
-  res.send(svg);
-});
-
 // ========== SCHOOLS ROUTES ==========
 
 // Get all schools
