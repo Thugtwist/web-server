@@ -557,7 +557,7 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// SIMPLIFIED: Get active announcements - FIXED VERSION
+// FIXED: Get active announcements with proper base64 handling
 app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
@@ -565,7 +565,6 @@ app.get('/api/announcements/active', async (req, res) => {
     const db = mongoose.connection.db;
     const announcementsCollection = db.collection('announcements');
     
-    // Use mobile app query
     let query = {
       status: { $ne: "inactive" }
     };
@@ -578,49 +577,56 @@ app.get('/api/announcements/active', async (req, res) => {
 
     console.log(`✅ Found ${announcements.length} raw announcements`);
 
-    // SIMPLIFIED: Process announcements
+    // Process announcements with proper base64 handling
     const formattedAnnouncements = announcements.map(announcement => {
-      console.log('🔍 Processing announcement:', {
-        id: announcement._id,
-        title: announcement.Title || announcement.title,
-        hasImage: !!announcement.image,
-        hasPhoto: !!announcement.Photo,
-        imageType: announcement.image ? 
-          (announcement.image.startsWith('data:') ? 'base64' : 
-           announcement.image.startsWith('http') ? 'url' : 
-           announcement.image.startsWith('iVBORw') ? 'base64-no-prefix' : 'other') : 'none'
-      });
-
-      // Get title from either field
       const title = announcement.Title || announcement.title || "Announcement";
       const description = announcement.Description || announcement.description || "";
       const date = announcement.Date || announcement.date || 
                    announcement.createdAt ? announcement.createdAt.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-      // SIMPLIFIED IMAGE HANDLING - Try multiple approaches
-      let finalImage = getPlaceholderUrl(req); // Default to placeholder
+      // CRITICAL FIX: Handle the base64 image data properly
+      let finalImage = getPlaceholderUrl(req); // Default fallback
 
-      // Priority 1: Use Photo field if it exists and is valid
-      if (announcement.Photo && announcement.Photo.trim() !== '') {
-        console.log(`   Using Photo field for: ${title}`);
-        finalImage = processImageData(announcement.Photo, req);
+      if (announcement.image && announcement.image.trim() !== '') {
+        console.log(`🖼️ Processing image for: ${title}`);
+        console.log(`   Image data length: ${announcement.image.length}`);
+        console.log(`   Image starts with: ${announcement.image.substring(0, 20)}`);
+        
+        // Check if it's base64 JPEG data (starts with /9j/)
+        if (announcement.image.startsWith('/9j/')) {
+          console.log(`   ✅ Detected JPEG base64 data`);
+          finalImage = `data:image/jpeg;base64,${announcement.image}`;
+        }
+        // Check if it's base64 PNG data (starts with iVBORw)
+        else if (announcement.image.startsWith('iVBORw')) {
+          console.log(`   ✅ Detected PNG base64 data`);
+          finalImage = `data:image/png;base64,${announcement.image}`;
+        }
+        // Check if it's already a proper data URL
+        else if (announcement.image.startsWith('data:image')) {
+          console.log(`   ✅ Already proper data URL`);
+          finalImage = announcement.image;
+        }
+        // Check if it's an external URL
+        else if (announcement.image.startsWith('http')) {
+          console.log(`   ✅ External URL`);
+          finalImage = announcement.image;
+        }
+        else {
+          console.log(`   ❓ Unknown image format, using placeholder`);
+        }
+      } else {
+        console.log(`   ❌ No image data for: ${title}`);
       }
-      // Priority 2: Use image field if it exists and is valid
-      else if (announcement.image && announcement.image.trim() !== '') {
-        console.log(`   Using image field for: ${title}`);
-        finalImage = processImageData(announcement.image, req);
-      }
-      // Priority 3: If both exist but are invalid, use placeholder
-      else {
-        console.log(`   No valid image data for: ${title}, using placeholder`);
-      }
+
+      console.log(`   Final image type: ${finalImage.startsWith('data:image') ? 'base64' : 'url'}`);
 
       return {
         // Mobile app fields
         _id: announcement._id?.toString(),
         Title: title,
         Description: description,
-        Photo: finalImage,
+        Photo: finalImage, // Use the processed image
         Date: date,
         sentBy: announcement.sentBy || "Administrator",
         priority: announcement.priority || "medium",
@@ -629,13 +635,13 @@ app.get('/api/announcements/active', async (req, res) => {
         // Website fields
         title: title,
         description: description,
-        image: finalImage,
+        image: finalImage, // Use the processed image
         date: date,
         isActive: announcement.status !== "inactive"
       };
     });
 
-    console.log(`🎉 Final processing complete. Sending ${formattedAnnouncements.length} announcements`);
+    console.log(`🎉 Successfully processed ${formattedAnnouncements.length} announcements with images`);
     
     sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
@@ -644,58 +650,13 @@ app.get('/api/announcements/active', async (req, res) => {
   }
 });
 
-// Helper function to process image data
-function processImageData(imageData, req) {
-  if (!imageData || imageData.trim() === '') {
-    return getPlaceholderUrl(req);
-  }
-
-  // Trim any whitespace
-  imageData = imageData.trim();
-
-  // Case 1: Already a valid base64 data URL
-  if (imageData.startsWith('data:image') && imageData.length > 1000) {
-    console.log(`      ✅ Valid base64 data URL`);
-    return imageData;
-  }
-
-  // Case 2: Base64 without prefix but has sufficient data
-  if (imageData.startsWith('iVBORw') && imageData.length > 1000) {
-    console.log(`      ✅ Base64 without prefix, adding prefix`);
-    return `data:image/png;base64,${imageData}`;
-  }
-
-  // Case 3: External URL
-  if (imageData.startsWith('http')) {
-    console.log(`      ✅ External URL`);
-    return imageData;
-  }
-
-  // Case 4: Base64 data that's too short (corrupted)
-  if ((imageData.startsWith('data:image') || imageData.startsWith('iVBORw')) && imageData.length < 1000) {
-    console.log(`      ❌ Base64 data too short (${imageData.length} chars), likely corrupted`);
-    return getPlaceholderUrl(req);
-  }
-
-  // Case 5: Filename (without uploads folder)
-  if (imageData.includes('.') && !imageData.startsWith('http') && !imageData.startsWith('data:')) {
-    console.log(`      ❌ Filename without uploads folder: ${imageData}`);
-    return getPlaceholderUrl(req);
-  }
-
-  // Case 6: Unknown format
-  console.log(`      ❓ Unknown image format: ${imageData.substring(0, 50)}...`);
-  return getPlaceholderUrl(req);
-}
-
-// Updated placeholder function
+// Keep your placeholder function
 function getPlaceholderUrl(req) {
   const baseUrl = getBaseUrl(req);
-  // Use a simple SVG placeholder that will definitely work
   return `${baseUrl}/images/placeholder.svg`;
 }
 
-// Add a reliable SVG placeholder endpoint
+// Keep your SVG placeholder endpoint
 app.get('/images/placeholder.svg', (req, res) => {
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
