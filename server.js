@@ -79,109 +79,7 @@ db.once('open', () => {
   console.log('📊 MongoDB database connection established - jbmmsi');
 });
 
-// Enhanced Multer configuration for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const originalName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '-');
-    cb(null, uniqueSuffix + '-' + originalName);
-  }
-});
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp|svg/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Error: Images only (JPEG, JPG, PNG, GIF, WEBP, SVG)!'));
-    }
-  },
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
-
-// Create uploads directory if it doesn't exist
-const mkdir = promisify(fs.mkdir);
-const exists = promisify(fs.exists);
-
-async function ensureUploadsDir() {
-  try {
-    const uploadsExists = await exists('uploads');
-    if (!uploadsExists) {
-      await mkdir('uploads', { recursive: true });
-      console.log('📁 Uploads directory created successfully');
-    }
-  } catch (error) {
-    console.error('❌ Error creating uploads directory:', error);
-  }
-}
-
-ensureUploadsDir();
-
-// Add this function to convert base64 images to files
-async function convertBase64ToImages() {
-  try {
-    console.log('🔄 Checking for base64 images to convert...');
-    
-    const announcements = await Announcement.find({
-      $or: [
-        { image: { $regex: /^iVBORw/ } },
-        { image: { $regex: /^data:image/ } }
-      ]
-    });
-    
-    console.log(`📸 Found ${announcements.length} announcements with base64 images`);
-    
-    for (const announcement of announcements) {
-      try {
-        let base64Data = announcement.image;
-        
-        // Remove data URL prefix if present
-        if (base64Data.startsWith('data:image')) {
-          base64Data = base64Data.split(',')[1];
-        }
-        
-        // Generate filename
-        const filename = `converted-${announcement._id}-${Date.now()}.png`;
-        const filePath = path.join(__dirname, 'uploads', filename);
-        
-        // Convert base64 to buffer and save as file
-        const imageBuffer = Buffer.from(base64Data, 'base64');
-        await fs.writeFile(filePath, imageBuffer);
-        
-        // Update announcement with filename instead of base64
-        announcement.image = filename;
-        await announcement.save();
-        
-        console.log(`✅ Converted base64 image for: ${announcement.title}`);
-      } catch (error) {
-        console.error(`❌ Failed to convert image for ${announcement.title}:`, error.message);
-      }
-    }
-    
-    console.log('🎉 Base64 image conversion completed');
-  } catch (error) {
-    console.error('❌ Error in base64 conversion:', error);
-  }
-}
-
-// Call this function when server starts (after MongoDB connection)
-db.once('open', () => {
-  console.log('🗄️ Database jbmmsi is ready - setting up change streams');
-  setupChangeStreams();
-  
-  // Convert existing base64 images
-  convertBase64ToImages();
-});
 
 // ========== SCHEMAS ==========
 
@@ -640,10 +538,9 @@ app.get('/api/announcements', async (req, res) => {
       .limit(limit * 1)
       .skip((page - 1) * limit);
     
-    // Format image URLs
+    // Format announcements
     const formattedAnnouncements = announcements.map(announcement => ({
-      ...announcement.toObject(),
-      image: formatImageUrl(req, announcement.image)
+      ...announcement.toObject()
     }));
     
     const total = await Announcement.countDocuments(query);
@@ -660,7 +557,7 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// FIXED: Get active announcements (compatible with mobile app)
+// FIXED: Get active announcements (no uploads folder dependency)
 app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
@@ -691,7 +588,7 @@ app.get('/api/announcements/active', async (req, res) => {
       const date = announcement.Date || announcement.date || 
                    announcement.createdAt ? announcement.createdAt.toISOString() : new Date().toISOString();
 
-      // Process image URL
+      // Process image - only handle base64 data, ignore file paths
       if (image) {
         // If it's base64 data, use as is
         if (image.startsWith('data:image') || image.startsWith('iVBORw')) {
@@ -701,11 +598,16 @@ app.get('/api/announcements/active', async (req, res) => {
             image = `data:image/png;base64,${image}`;
           }
         } 
-        // If it's a filename, construct full URL
-        else if (image && !image.startsWith('http') && !image.startsWith('data:')) {
-          image = formatImageUrl(req, image);
+        // If it's a filename or URL, check if it's a valid image URL
+        else if (image.startsWith('http')) {
+          // Keep external URLs as is
+          console.log(`🌐 Using external image URL for: ${title}`);
         }
-        // If empty or invalid, use placeholder
+        // If it's just a filename (no uploads folder), use placeholder
+        else {
+          console.log(`❌ Filename without uploads folder: ${image}, using placeholder`);
+          image = getPlaceholderUrl(req);
+        }
       } else {
         image = getPlaceholderUrl(req);
       }
@@ -793,9 +695,14 @@ app.get("/api/getAnnouncements", async (req, res) => {
             imageUrl = `data:image/png;base64,${imageUrl}`;
           }
         } 
-        // Handle filenames
+        // Handle external URLs
+        else if (imageUrl.startsWith('http')) {
+          // Keep external URLs as is
+        }
+        // Handle filenames (without uploads folder)
         else if (imageUrl && !imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
-          imageUrl = formatImageUrl(req, imageUrl);
+          console.log(`⚠️ Filename without uploads folder: ${imageUrl}, using placeholder`);
+          imageUrl = getPlaceholderUrl(req);
         }
       } else {
         imageUrl = getPlaceholderUrl(req);
@@ -826,48 +733,26 @@ app.get("/api/getAnnouncements", async (req, res) => {
   }
 });
 
-// Get single announcement
-app.get('/api/announcements/:id', async (req, res) => {
+// Create new announcement (accepts base64 image data)
+app.post('/api/announcements', async (req, res) => {
   try {
-    const announcement = await Announcement.findById(req.params.id);
+    const { title, date, description, image } = req.body;
     
-    if (!announcement) {
-      return sendResponse(res, 404, false, 'Announcement not found');
-    }
-    
-    const formattedAnnouncement = {
-      ...announcement.toObject(),
-      image: formatImageUrl(req, announcement.image)
-    };
-    
-    sendResponse(res, 200, true, 'Announcement fetched successfully', formattedAnnouncement);
-  } catch (error) {
-    console.error('Error fetching announcement:', error);
-    sendResponse(res, 500, false, 'Error fetching announcement');
-  }
-});
-
-// Create new announcement
-app.post('/api/announcements', upload.single('image'), async (req, res) => {
-  try {
-    const { title, date, description } = req.body;
-    
-    if (!req.file) {
-      return sendResponse(res, 400, false, 'Image file is required');
+    if (!image) {
+      return sendResponse(res, 400, false, 'Image data is required');
     }
     
     const announcement = new Announcement({
       title,
       date,
       description,
-      image: req.file.filename
+      image // Store base64 data directly
     });
     
     await announcement.save();
     
     const formattedAnnouncement = {
-      ...announcement.toObject(),
-      image: formatImageUrl(req, announcement.image)
+      ...announcement.toObject()
     };
     
     broadcastToClients('announcement_created', formattedAnnouncement);
@@ -879,10 +764,10 @@ app.post('/api/announcements', upload.single('image'), async (req, res) => {
   }
 });
 
-// Update announcement
-app.put('/api/announcements/:id', upload.single('image'), async (req, res) => {
+// Update announcement (accepts base64 image data)
+app.put('/api/announcements/:id', async (req, res) => {
   try {
-    const { title, date, description, isActive } = req.body;
+    const { title, date, description, isActive, image } = req.body;
     const updateData = { 
       title, 
       date, 
@@ -891,8 +776,8 @@ app.put('/api/announcements/:id', upload.single('image'), async (req, res) => {
       updatedAt: new Date()
     };
     
-    if (req.file) {
-      updateData.image = req.file.filename;
+    if (image) {
+      updateData.image = image; // Store base64 data directly
     }
     
     const announcement = await Announcement.findByIdAndUpdate(
@@ -906,8 +791,7 @@ app.put('/api/announcements/:id', upload.single('image'), async (req, res) => {
     }
     
     const formattedAnnouncement = {
-      ...announcement.toObject(),
-      image: formatImageUrl(req, announcement.image)
+      ...announcement.toObject()
     };
     
     broadcastToClients('announcement_updated', formattedAnnouncement);
@@ -1016,73 +900,6 @@ app.get('/api/schools/:id', async (req, res) => {
   }
 });
 
-// Create new school
-app.post('/api/schools', upload.single('image'), async (req, res) => {
-  try {
-    const { name } = req.body;
-    
-    if (!req.file) {
-      return sendResponse(res, 400, false, 'Image file is required');
-    }
-    
-    const school = new School({
-      name,
-      imageUrl: req.file.filename
-    });
-    
-    await school.save();
-    
-    const schoolWithFullUrl = {
-      ...school.toObject(),
-      imageUrl: formatImageUrl(req, school.imageUrl)
-    };
-    
-    broadcastToClients('school_created', schoolWithFullUrl);
-    
-    sendResponse(res, 201, true, 'School created successfully', schoolWithFullUrl);
-  } catch (error) {
-    console.error('Error creating school:', error);
-    sendResponse(res, 500, false, 'Error creating school');
-  }
-});
-
-// Update school
-app.put('/api/schools/:id', upload.single('image'), async (req, res) => {
-  try {
-    const { name, isActive } = req.body;
-    const updateData = { 
-      name, 
-      isActive,
-      updatedAt: new Date()
-    };
-    
-    if (req.file) {
-      updateData.imageUrl = req.file.filename;
-    }
-    
-    const school = await School.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true }
-    );
-    
-    if (!school) {
-      return sendResponse(res, 404, false, 'School not found');
-    }
-    
-    const schoolWithFullUrl = {
-      ...school.toObject(),
-      imageUrl: formatImageUrl(req, school.imageUrl)
-    };
-    
-    broadcastToClients('school_updated', schoolWithFullUrl);
-    
-    sendResponse(res, 200, true, 'School updated successfully', schoolWithFullUrl);
-  } catch (error) {
-    console.error('Error updating school:', error);
-    sendResponse(res, 500, false, 'Error updating school');
-  }
-});
 
 // Delete school
 app.delete('/api/schools/:id', async (req, res) => {
