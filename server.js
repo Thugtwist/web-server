@@ -627,7 +627,9 @@ app.post('/api/inquiries', async (req, res) => {
 
 // ========== ANNOUNCEMENTS ROUTES ==========
 
-// Get all announcements with pagination
+// ========== ANNOUNCEMENTS ROUTES ==========
+
+// Get all announcements with pagination (Admin)
 app.get('/api/announcements', async (req, res) => {
   try {
     const { page = 1, limit = 10, active } = req.query;
@@ -658,62 +660,80 @@ app.get('/api/announcements', async (req, res) => {
   }
 });
 
-// IMPROVED FIX - Active announcements endpoint
+// FIXED: Get active announcements (compatible with mobile app)
 app.get('/api/announcements/active', async (req, res) => {
   try {
     console.log('📢 Fetching active announcements...');
     
-    // Get ALL announcements regardless of isActive status
-    const announcements = await Announcement.find({})
+    // Use native MongoDB driver to access the same collection as mobile app
+    const db = mongoose.connection.db;
+    const announcementsCollection = db.collection('announcements');
+    
+    // Use the same query as mobile app
+    let query = {
+      status: { $ne: "inactive" }
+    };
+
+    const announcements = await announcementsCollection
+      .find(query)
       .sort({ createdAt: -1 })
-      .limit(6);
-    
-    console.log(`✅ Found ${announcements.length} announcements`);
-    
-    // Format announcements with PROPER image handling
-    const formattedAnnouncements = await Promise.all(
-      announcements.map(async (announcement) => {
-        let imageUrl = announcement.image;
-        
-        // Check if image is base64 (incomplete data)
-        if (announcement.image && 
-            (announcement.image.startsWith('iVBORw') || 
-             announcement.image.startsWith('data:image'))) {
-          
-          console.log(`⚠️ Base64 image detected for: ${announcement.title}`);
-          console.log(`📏 Image data length: ${announcement.image.length}`);
-          
-          // If base64 data is too short, it's probably truncated
-          if (announcement.image.length < 1000) {
-            console.log(`❌ Base64 data too short, using placeholder for: ${announcement.title}`);
-            imageUrl = getPlaceholderUrl(req);
-          } else {
-            try {
-              // Try to use base64 data with proper prefix
-              if (announcement.image.startsWith('iVBORw')) {
-                imageUrl = `data:image/png;base64,${announcement.image}`;
-              }
-              // If it already has data: prefix, use as is
-            } catch (error) {
-              console.error(`❌ Error processing base64 for ${announcement.title}:`, error);
-              imageUrl = getPlaceholderUrl(req);
-            }
+      .limit(6)
+      .toArray();
+
+    console.log(`✅ Found ${announcements.length} announcements from database`);
+
+    // Format announcements to be compatible with both mobile and website
+    const formattedAnnouncements = announcements.map(announcement => {
+      // Use mobile app field names as primary, with fallbacks
+      const title = announcement.Title || announcement.title || "Announcement";
+      const description = announcement.Description || announcement.description || "";
+      let image = announcement.Photo || announcement.image || "";
+      const date = announcement.Date || announcement.date || 
+                   announcement.createdAt ? announcement.createdAt.toISOString() : new Date().toISOString();
+
+      // Process image URL
+      if (image) {
+        // If it's base64 data, use as is
+        if (image.startsWith('data:image') || image.startsWith('iVBORw')) {
+          console.log(`📸 Using base64 image for: ${title}`);
+          // Ensure base64 has proper prefix
+          if (image.startsWith('iVBORw') && image.length > 1000) {
+            image = `data:image/png;base64,${image}`;
           }
-        } else if (announcement.image && !announcement.image.startsWith('http')) {
-          // Construct proper URL for filenames
-          imageUrl = formatImageUrl(req, announcement.image);
-        } else if (!announcement.image) {
-          // No image - use placeholder
-          imageUrl = getPlaceholderUrl(req);
+        } 
+        // If it's a filename, construct full URL
+        else if (image && !image.startsWith('http') && !image.startsWith('data:')) {
+          image = formatImageUrl(req, image);
         }
+        // If empty or invalid, use placeholder
+      } else {
+        image = getPlaceholderUrl(req);
+      }
+
+      return {
+        // Mobile app fields
+        _id: announcement._id?.toString() || `announcement-${Date.now()}`,
+        Title: title,
+        Description: description,
+        Photo: image,
+        Date: date,
+        sentBy: announcement.sentBy || "Administrator",
+        priority: announcement.priority || "medium",
+        targetAudience: announcement.targetAudience || "all",
+        targetSection: announcement.targetSection || null,
+        targetTeacherId: announcement.targetTeacherId || null,
+        createdAt: announcement.createdAt || new Date(),
+        updatedAt: announcement.updatedAt || new Date(),
         
-        return {
-          ...announcement.toObject(),
-          image: imageUrl
-        };
-      })
-    );
-    
+        // Website fields (compatibility)
+        title: title,
+        description: description,
+        image: image,
+        date: date,
+        isActive: announcement.isActive !== false
+      };
+    });
+
     sendResponse(res, 200, true, 'Announcements fetched successfully', formattedAnnouncements);
   } catch (error) {
     console.error('❌ Error fetching announcements:', error);
@@ -721,10 +741,90 @@ app.get('/api/announcements/active', async (req, res) => {
   }
 });
 
-// Add this helper function
-function getPlaceholderUrl(req) {
-  return `${getBaseUrl(req)}/images/placeholder.jpg`;
-}
+// Unified endpoint that matches mobile app exactly
+app.get("/api/getAnnouncements", async (req, res) => {
+  try {
+    const { lastUpdate, limit = 50 } = req.query;
+
+    console.log("📢 Fetching announcements, lastUpdate:", lastUpdate);
+
+    const db = mongoose.connection.db;
+    const announcementsCollection = db.collection("announcements");
+
+    let query = {
+      status: { $ne: "inactive" }
+    };
+
+    if (lastUpdate) {
+      query.updatedAt = { $gt: new Date(parseInt(lastUpdate)) };
+    }
+
+    const announcements = await announcementsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+
+    console.log("✅ Found", announcements.length, "announcements from database");
+
+    const formattedAnnouncements = announcements.map(announcement => ({
+      _id: announcement._id?.toString() || `announcement-${Date.now()}`,
+      Title: announcement.title || announcement.Title || "Announcement",
+      Description: announcement.description || announcement.Description || "",
+      Photo: announcement.image || announcement.Photo || "",
+      Date: announcement.date || announcement.Date || announcement.createdAt ? announcement.createdAt.toISOString() : new Date().toISOString(),
+      sentBy: announcement.sentBy || "Administrator",
+      priority: announcement.priority || "medium",
+      targetAudience: announcement.targetAudience || "all",
+      targetSection: announcement.targetSection || null,
+      targetTeacherId: announcement.targetTeacherId || null,
+      createdAt: announcement.createdAt || new Date(),
+      updatedAt: announcement.updatedAt || new Date()
+    }));
+
+    // Process image URLs for web
+    const webFormattedAnnouncements = formattedAnnouncements.map(announcement => {
+      let imageUrl = announcement.Photo;
+      
+      if (imageUrl) {
+        // Handle base64 data
+        if (imageUrl.startsWith('data:image') || imageUrl.startsWith('iVBORw')) {
+          if (imageUrl.startsWith('iVBORw') && imageUrl.length > 1000) {
+            imageUrl = `data:image/png;base64,${imageUrl}`;
+          }
+        } 
+        // Handle filenames
+        else if (imageUrl && !imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
+          imageUrl = formatImageUrl(req, imageUrl);
+        }
+      } else {
+        imageUrl = getPlaceholderUrl(req);
+      }
+      
+      return {
+        ...announcement,
+        image: imageUrl, // Add image field for website
+        Photo: imageUrl  // Keep Photo field for mobile
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: webFormattedAnnouncements,
+      lastUpdated: new Date(),
+      count: webFormattedAnnouncements.length,
+      message: `Found ${webFormattedAnnouncements.length} announcement(s)`
+    });
+
+  } catch (err) {
+    console.error("❌ Error fetching announcements:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error fetching announcements.",
+      data: []
+    });
+  }
+});
 
 // Get single announcement
 app.get('/api/announcements/:id', async (req, res) => {
@@ -744,33 +844,6 @@ app.get('/api/announcements/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching announcement:', error);
     sendResponse(res, 500, false, 'Error fetching announcement');
-  }
-});
-
-// Add this debug endpoint to check specific announcement images
-app.get('/api/debug/announcement-images', async (req, res) => {
-  try {
-    const announcements = await Announcement.find({});
-    
-    const imageAnalysis = announcements.map(announcement => ({
-      id: announcement._id,
-      title: announcement.title,
-      hasImage: !!announcement.image,
-      imageLength: announcement.image ? announcement.image.length : 0,
-      imagePreview: announcement.image ? 
-        announcement.image.substring(0, 100) + '...' : 
-        'No image',
-      imageType: announcement.image ? 
-        (announcement.image.startsWith('data:') ? 'data-url' : 
-         announcement.image.startsWith('iVBORw') ? 'base64-no-prefix' : 
-         announcement.image.startsWith('http') ? 'url' : 'filename') : 
-        'none'
-    }));
-    
-    sendResponse(res, 200, true, 'Image analysis', imageAnalysis);
-  } catch (error) {
-    console.error('Image analysis error:', error);
-    sendResponse(res, 500, false, 'Analysis error');
   }
 });
 
@@ -862,6 +935,25 @@ app.delete('/api/announcements/:id', async (req, res) => {
     console.error('Error deleting announcement:', error);
     sendResponse(res, 500, false, 'Error deleting announcement');
   }
+});
+
+// Helper function to get placeholder URL
+function getPlaceholderUrl(req) {
+  const baseUrl = getBaseUrl(req);
+  return `${baseUrl}/images/placeholder.jpg`;
+}
+
+// Add placeholder image endpoint
+app.get('/images/placeholder.jpg', (req, res) => {
+  // Simple SVG placeholder
+  const svg = `<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100%" height="100%" fill="#f0f0f0"/>
+    <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" 
+          font-family="Arial" font-size="16" fill="#999">No Image Available</text>
+  </svg>`;
+  
+  res.set('Content-Type', 'image/svg+xml');
+  res.send(svg);
 });
 
 // ========== SCHOOLS ROUTES ==========
